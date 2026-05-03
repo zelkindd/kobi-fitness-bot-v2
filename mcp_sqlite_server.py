@@ -77,6 +77,15 @@ def init_db():
         skip_reason TEXT
     )''')
 
+    c.execute('''CREATE TABLE IF NOT EXISTS km_splits (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_date TEXT,
+        km INTEGER,
+        pace TEXT,
+        pace_seconds INTEGER,
+        distance_km REAL
+    )''')
+
     for col, coltype in [("weight_target", "REAL"), ("workout_type", "TEXT")]:
         try:
             c.execute(f"ALTER TABLE user_profile ADD COLUMN {col} {coltype}")
@@ -203,6 +212,74 @@ def get_runs_by_type(workout_type: str, limit: int = 6) -> list:
     rows = c.fetchall()
     conn.close()
     return [{"date": r[0], "distance_km": r[1], "pace": r[2], "avg_heart_rate": r[3]} for r in rows]
+
+
+@mcp.tool()
+def log_km_splits(run_date: str, splits: list) -> str:
+    """
+    Save per-km split data for a run.
+    splits: list of {km, pace, distance_km} — pace as string e.g. '5:30'.
+    Call this right after log_run whenever km_splits data is available.
+    """
+    def pace_to_seconds(p: str) -> int:
+        try:
+            m, s = p.replace("/km", "").strip().split(":")
+            return int(m) * 60 + int(s)
+        except Exception:
+            return 0
+
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("DELETE FROM km_splits WHERE run_date=?", (run_date,))
+    for split in splits:
+        secs = pace_to_seconds(str(split.get("pace", "")))
+        c.execute(
+            "INSERT INTO km_splits (run_date, km, pace, pace_seconds, distance_km) VALUES (?,?,?,?,?)",
+            (run_date, split.get("km"), split.get("pace"), secs, split.get("distance_km"))
+        )
+    conn.commit()
+    conn.close()
+    return f"נשמרו {len(splits)} ק״מ לתאריך {run_date}"
+
+
+@mcp.tool()
+def get_km_splits(run_date: str) -> list:
+    """Get per-km splits for a specific run date. Returns list of {km, pace, pace_seconds, distance_km}."""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT km, pace, pace_seconds, distance_km FROM km_splits WHERE run_date=? ORDER BY km",
+        (run_date,)
+    )
+    rows = c.fetchall()
+    conn.close()
+    return [{"km": r[0], "pace": r[1], "pace_seconds": r[2], "distance_km": r[3]} for r in rows]
+
+
+@mcp.tool()
+def get_splits_history(limit: int = 5) -> list:
+    """
+    Get km splits for the last N runs that have split data stored.
+    Returns list of {run_date, splits: [{km, pace, pace_seconds}]}.
+    Use this to compare pace consistency and patterns across multiple runs.
+    """
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT DISTINCT run_date FROM km_splits ORDER BY run_date DESC LIMIT ?", (limit,)
+    )
+    dates = [r[0] for r in c.fetchall()]
+    result = []
+    for d in dates:
+        c.execute(
+            "SELECT km, pace, pace_seconds FROM km_splits WHERE run_date=? ORDER BY km", (d,)
+        )
+        result.append({
+            "run_date": d,
+            "splits": [{"km": r[0], "pace": r[1], "pace_seconds": r[2]} for r in c.fetchall()]
+        })
+    conn.close()
+    return result
 
 
 # ── Nutrition ─────────────────────────────────────────────────────────────────

@@ -89,5 +89,71 @@ def get_latest_activity() -> dict:
     return {"error": "לא נמצאה ריצה אחרונה בסטרבה"}
 
 
+def _parse_splits(detail: dict) -> list:
+    splits = []
+    for split in detail.get("splits_metric", []):
+        elapsed = split.get("moving_time", 0)
+        dist = split.get("distance", 0)
+        if dist > 0 and elapsed > 0:
+            spm = elapsed / (dist / 1000)
+            splits.append({
+                "km": split.get("split", len(splits) + 1),
+                "pace": f"{int(spm // 60)}:{int(spm % 60):02d}",
+                "distance_km": round(dist / 1000, 3)
+            })
+    return splits
+
+
+@mcp.tool()
+def get_recent_activities_with_splits(limit: int = 5) -> list:
+    """
+    Fetch the last N runs from Strava, each with per-km splits.
+    Use this to analyse pace patterns across multiple past runs.
+    Returns list of {date, distance_km, pace, avg_heart_rate, km_splits}.
+    """
+    try:
+        token = get_access_token()
+    except Exception as e:
+        return [{"error": f"לא הצלחתי להתחבר לסטרבה: {e}"}]
+
+    resp = requests.get(
+        "https://www.strava.com/api/v3/athlete/activities",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"per_page": 20}
+    )
+    resp.raise_for_status()
+    activities = resp.json()
+
+    runs = []
+    for activity in activities:
+        if len(runs) >= limit:
+            break
+        if activity.get("type") != "Run" and activity.get("sport_type") != "Run":
+            continue
+
+        moving_time = activity["moving_time"]
+        dist = activity["distance"]
+        pace_sec = moving_time / (dist / 1000) if dist > 0 else 0
+
+        try:
+            detail = requests.get(
+                f"https://www.strava.com/api/v3/activities/{activity['id']}",
+                headers={"Authorization": f"Bearer {token}"}
+            ).json()
+            km_splits = _parse_splits(detail)
+        except Exception:
+            km_splits = []
+
+        runs.append({
+            "date": activity["start_date_local"][:10],
+            "distance_km": round(dist / 1000, 2),
+            "pace": f"{int(pace_sec // 60)}:{int(pace_sec % 60):02d}/km",
+            "avg_heart_rate": int(activity["average_heartrate"]) if activity.get("average_heartrate") else None,
+            "km_splits": km_splits
+        })
+
+    return runs
+
+
 if __name__ == "__main__":
     mcp.run()

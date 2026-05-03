@@ -73,6 +73,6 @@ sudo journalctl -u kobi -f
 
 ## Tools exposed to DeepSeek
 
-**SQLite server:** `get_profile`, `update_profile`, `log_weight`, `get_recent_weights`, `log_run`, `get_recent_runs`, `get_runs_by_type`, `log_nutrition`, `get_recent_nutrition`, `get_training_plan`, `get_next_planned_workout`, `save_training_plan`, `set_plan_position`, `log_plan_execution`, `get_weekly_stats`, `update_workout_paces`
+**SQLite server:** `get_profile`, `update_profile`, `log_weight`, `get_recent_weights`, `log_run`, `get_recent_runs`, `get_runs_by_type`, `log_nutrition`, `get_recent_nutrition`, `get_training_plan`, `get_next_planned_workout`, `save_training_plan`, `set_plan_position`, `log_plan_execution`, `get_weekly_stats`, `update_workout_paces`, `log_km_splits`, `get_km_splits`, `get_splits_history`
 
-**Strava server:** `get_latest_activity`
+**Strava server:** `get_latest_activity`, `get_recent_activities_with_splits`
