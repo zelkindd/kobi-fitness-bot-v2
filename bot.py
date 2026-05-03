@@ -165,9 +165,11 @@ async def run_agent(user_message: str, system_prompt: str,
             return "אין תשובה"
 
 
+KOBI_VERSION = "2.0 (MCP Agent)"
+
 def build_system_prompt() -> str:
     return (
-        "אתה קובי, מאמן כושר ותזונה אישי. "
+        f"אתה קובי, מאמן כושר ותזונה אישי. גרסה: {KOBI_VERSION}. "
         "תמיד כתוב בעברית בלבד — אף מילה באנגלית. "
         "התאם את אורך התשובה לשאלה: שאלה פשוטה = משפט אחד; שאלה מורכבת = עד 4 משפטים. "
         "אל תוסיף עצות שלא התבקשו. "
