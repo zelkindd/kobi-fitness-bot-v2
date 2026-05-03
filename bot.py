@@ -76,42 +76,44 @@ STRAVA_SERVER = StdioServerParameters(
     env=None
 )
 
+# Cached at startup — tool schemas never change at runtime
+_tools_cache: list = []
+# Maps tool name → which server params to use
+_tool_server_map: dict = {}
 
-async def get_all_tools():
-    """Fetch tool schemas from both MCP servers."""
-    tools = []
+
+async def _load_tools():
+    """Discover all tools from both servers and cache them."""
+    global _tools_cache, _tool_server_map
+    _tools_cache = []
+    _tool_server_map = {}
     for server_params in [SQLITE_SERVER, STRAVA_SERVER]:
         async with stdio_client(server_params) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 result = await session.list_tools()
                 for t in result.tools:
-                    tools.append({
+                    _tools_cache.append({
                         "name": t.name,
                         "description": t.description,
                         "input_schema": t.inputSchema,
                     })
-    return tools
+                    _tool_server_map[t.name] = server_params
+    logging.info(f"Loaded {len(_tools_cache)} tools from MCP servers")
 
 
 async def call_tool(tool_name: str, tool_input: dict) -> str:
-    """Call a tool on whichever MCP server owns it."""
-    sqlite_tools = None
-    strava_tools = None
-
-    for server_params in [SQLITE_SERVER, STRAVA_SERVER]:
-        async with stdio_client(server_params) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                result = await session.list_tools()
-                names = [t.name for t in result.tools]
-                if tool_name in names:
-                    call_result = await session.call_tool(tool_name, tool_input)
-                    if call_result.content:
-                        return call_result.content[0].text
-                    return "בוצע"
-
-    return f"כלי לא נמצא: {tool_name}"
+    """Call a tool on the correct MCP server."""
+    server_params = _tool_server_map.get(tool_name)
+    if not server_params:
+        return f"כלי לא נמצא: {tool_name}"
+    async with stdio_client(server_params) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            result = await session.call_tool(tool_name, tool_input)
+            if result.content:
+                return result.content[0].text
+            return "בוצע"
 
 
 async def run_agent(user_message: str, system_prompt: str,
@@ -120,7 +122,7 @@ async def run_agent(user_message: str, system_prompt: str,
     Agent loop: send message to Claude with tools, execute tool calls,
     loop until Claude gives a final text answer.
     """
-    tools = await get_all_tools()
+    tools = _tools_cache
 
     messages = list(conversation_history)
     if image_data:
@@ -377,7 +379,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def post_init(app):
+async def on_startup(app):
+    await _load_tools()
     from telegram import BotCommand
     await app.bot.set_my_commands([
         BotCommand("help", "מה שקובי יודע לעשות"),
@@ -392,7 +395,7 @@ def main():
     from mcp_sqlite_server import init_db
     init_db()
 
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(post_init).build()
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(on_startup).build()
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
@@ -403,7 +406,7 @@ def main():
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("קובי רץ...")
+    logging.info("קובי רץ...")
     app.run_polling()
 
 
