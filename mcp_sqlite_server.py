@@ -3,7 +3,7 @@ import os
 import json
 from datetime import date, timedelta
 from fastmcp import FastMCP
-import anthropic
+from openai import OpenAI
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -286,29 +286,30 @@ def get_next_planned_workout() -> dict:
 @mcp.tool()
 def save_training_plan(plan_text: str) -> str:
     """Parse a free-text training plan and save it to the database. Replaces existing plan."""
-    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-    response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=2000,
-        system="You are a data parser. Extract training plan entries and return them in strict format only. No extra text.",
-        messages=[{"role": "user", "content": (
-            "Parse this training plan. Return each workout as:\n"
-            "ENTRY: week|run_num|workout_type|distance_km|pace_zone|notes\n\n"
-            "Rules:\n"
-            "- week: integer (1-12)\n"
-            "- run_num: 1, 2, 3, or 4\n"
-            "- workout_type: Easy Run / Long Run / Tempo / Intervals\n"
-            "- distance_km: total km\n"
-            "- pace_zone: pace range string e.g. 6:20-6:40\n"
-            "- notes: interval details or phase name\n"
-            "- Skip rest days\n"
-            "- One ENTRY line per workout, nothing else\n\n"
-            f"Plan:\n{plan_text}"
-        )}]
+    client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com")
+    response = client.chat.completions.create(
+        model="deepseek-chat",
+        messages=[
+            {"role": "system", "content": "You are a data parser. Extract training plan entries and return them in strict format only. No extra text."},
+            {"role": "user", "content": (
+                "Parse this training plan. Return each workout as:\n"
+                "ENTRY: week|run_num|workout_type|distance_km|pace_zone|notes\n\n"
+                "Rules:\n"
+                "- week: integer (1-12)\n"
+                "- run_num: 1, 2, 3, or 4\n"
+                "- workout_type: Easy Run / Long Run / Tempo / Intervals\n"
+                "- distance_km: total km\n"
+                "- pace_zone: pace range string e.g. 6:20-6:40\n"
+                "- notes: interval details or phase name\n"
+                "- Skip rest days\n"
+                "- One ENTRY line per workout, nothing else\n\n"
+                f"Plan:\n{plan_text}"
+            )}
+        ]
     )
 
     entries = []
-    for line in response.content[0].text.splitlines():
+    for line in response.choices[0].message.content.splitlines():
         line = line.strip()
         if not line.startswith("ENTRY:"):
             continue

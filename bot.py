@@ -7,17 +7,19 @@ from datetime import date
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, ContextTypes
 from dotenv import load_dotenv
-import anthropic
+from openai import OpenAI
 import os
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 ALLOWED_USER_ID = 5748496029
 
-claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+ai = OpenAI(
+    api_key=os.getenv("DEEPSEEK_API_KEY"),
+    base_url="https://api.deepseek.com"
+)
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -124,47 +126,48 @@ async def run_agent(user_message: str, system_prompt: str,
     """
     tools = _tools_cache
 
-    messages = list(conversation_history)
+    messages = [{"role": "system", "content": system_prompt}] + list(conversation_history)
     if image_data:
         messages.append({"role": "user", "content": [
-            {"type": "image", "source": {"type": "base64",
-             "media_type": image_data["media_type"], "data": image_data["data"]}},
+            {"type": "image_url", "image_url": {
+                "url": f"data:{image_data['media_type']};base64,{image_data['data']}"
+            }},
             {"type": "text", "text": user_message}
         ]})
     else:
         messages.append({"role": "user", "content": user_message})
 
+    # Convert MCP tool schemas to OpenAI function format
+    openai_tools = [
+        {"type": "function", "function": {
+            "name": t["name"],
+            "description": t["description"],
+            "parameters": t["input_schema"]
+        }} for t in tools
+    ]
+
     while True:
-        response = claude.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=1024,
-            system=system_prompt,
-            tools=tools,
-            messages=messages
+        response = ai.chat.completions.create(
+            model="deepseek-chat",
+            messages=messages,
+            tools=openai_tools,
+            tool_choice="auto"
         )
 
-        if response.stop_reason == "end_turn":
-            for block in response.content:
-                if hasattr(block, "text"):
-                    return block.text
-            return "אין תשובה"
+        msg = response.choices[0].message
 
-        if response.stop_reason == "tool_use":
-            messages.append({"role": "assistant", "content": response.content})
-
-            tool_results = []
-            for block in response.content:
-                if block.type == "tool_use":
-                    result = await call_tool(block.name, block.input)
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": result
-                    })
-
-            messages.append({"role": "user", "content": tool_results})
+        if msg.tool_calls:
+            messages.append(msg)
+            for tc in msg.tool_calls:
+                tool_input = json.loads(tc.function.arguments)
+                result = await call_tool(tc.function.name, tool_input)
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": result
+                })
         else:
-            return "אין תשובה"
+            return msg.content or "אין תשובה"
 
 
 KOBI_VERSION = "2.0 (MCP Agent)"

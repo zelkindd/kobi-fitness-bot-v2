@@ -1,5 +1,5 @@
 python-telegram-bot
-anthropic
+openai
 requests
 python-dotenv
 fastmcp
