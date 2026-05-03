@@ -69,9 +69,10 @@ sudo journalctl -u kobi -f
 | `/setweek 2 1` | Set current position in plan |
 | `/settarget 75` | Set weight target |
 | `/setup` | Redo onboarding |
+| `/balance` | Check remaining DeepSeek API credit |
 
 ## Tools exposed to DeepSeek
 
-**SQLite server:** `get_profile`, `update_profile`, `log_weight`, `get_recent_weights`, `log_run`, `get_recent_runs`, `get_runs_by_type`, `log_nutrition`, `get_recent_nutrition`, `get_training_plan`, `get_next_planned_workout`, `save_training_plan`, `set_plan_position`, `log_plan_execution`, `get_weekly_stats`
+**SQLite server:** `get_profile`, `update_profile`, `log_weight`, `get_recent_weights`, `log_run`, `get_recent_runs`, `get_runs_by_type`, `log_nutrition`, `get_recent_nutrition`, `get_training_plan`, `get_next_planned_workout`, `save_training_plan`, `set_plan_position`, `log_plan_execution`, `get_weekly_stats`, `update_workout_paces`
 
 **Strava server:** `get_latest_activity`

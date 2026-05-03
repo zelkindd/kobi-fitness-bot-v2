@@ -180,7 +180,11 @@ def build_system_prompt() -> str:
         "אל תוסיף עצות שלא התבקשו. "
         "אל תשתמש ב-markdown, נקודות, או כותרות. כתוב כאילו אתה שולח הודעה לחבר. "
         "יש לך גישה לכלים לשליפת נתוני ריצות, משקל, תזונה ותכנית אימונים מהמסד נתונים, "
-        "ולכלי לשליפת הריצה האחרונה מסטרבה. השתמש בהם כשצריך לפני שאתה עונה."
+        "ולכלי לשליפת הריצה האחרונה מסטרבה. השתמש בהם כשצריך לפני שאתה עונה.\n\n"
+        "אחרי כל ריצה שנשמרת: השתמש ב-get_runs_by_type כדי לבדוק את מגמת הקצב. "
+        "אם המשתמש רץ מהר יותר מהיעד ב-3 ריצות רצופות לפחות (15 שניות/ק״מ מהר יותר), "
+        "השתמש ב-update_workout_paces כדי להקשות את קצב היעד באופן מתון (5-10 שניות/ק״מ). "
+        "ספר לו שעדכנת את התכנית. אל תקשה יותר מ-10 שניות בכל פעם."
     )
 
 
@@ -367,6 +371,32 @@ async def cmd_settarget(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("שלח מספר, כמו /settarget 75")
 
 
+async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ALLOWED_USER_ID:
+        return
+    import requests as req
+    try:
+        resp = req.get(
+            "https://api.deepseek.com/user/balance",
+            headers={"Authorization": f"Bearer {os.getenv('DEEPSEEK_API_KEY')}"}
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        info = data["balance_infos"][0]
+        currency = info["currency"]
+        total = info["total_balance"]
+        topped = info["topped_up_balance"]
+        granted = info["granted_balance"]
+        await update.message.reply_text(
+            f"יתרה ב-DeepSeek:\n"
+            f"סה״כ: {total} {currency}\n"
+            f"שטעון: {topped} {currency}\n"
+            f"מתנה: {granted} {currency}"
+        )
+    except Exception as e:
+        await update.message.reply_text(f"לא הצלחתי לשלוף את היתרה: {e}")
+
+
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ALLOWED_USER_ID:
         return
@@ -377,7 +407,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/setplan — טעינת תכנית אימונים\n"
         "/setweek 2 1 — קביעת מיקום בתכנית\n"
         "/settarget 75 — קביעת יעד משקל\n"
-        "/setup — הגדרות מחדש",
+        "/setup — הגדרות מחדש\n"
+        "/balance — יתרה ב-DeepSeek",
         reply_markup=MAIN_KEYBOARD
     )
 
@@ -391,6 +422,7 @@ async def on_startup(app):
         BotCommand("setweek", "קביעת מיקום בתכנית"),
         BotCommand("settarget", "קביעת יעד משקל"),
         BotCommand("setup", "הגדרות מחדש"),
+        BotCommand("balance", "יתרה ב-DeepSeek"),
     ])
 
 
@@ -402,6 +434,7 @@ def main():
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CommandHandler("balance", cmd_balance))
     app.add_handler(CommandHandler("setup", cmd_setup))
     app.add_handler(CommandHandler("setplan", cmd_setplan))
     app.add_handler(CommandHandler("settarget", cmd_settarget))

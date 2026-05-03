@@ -392,6 +392,28 @@ def log_plan_execution(planned_workout_id: str, completed: bool,
 
 
 @mcp.tool()
+def update_workout_paces(workout_type: str, new_pace: str) -> str:
+    """
+    Update the target pace for all future workouts of a given type in the training plan.
+    Use this after analysing pace trends to make the plan harder or easier.
+    workout_type: Easy Run / Long Run / Tempo / Intervals
+    new_pace: pace string e.g. '5:30-5:50' or '5:10/km'
+    """
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute(
+        "UPDATE training_plan SET target_pace=? WHERE workout_type=?",
+        (new_pace, workout_type)
+    )
+    updated = c.rowcount
+    conn.commit()
+    conn.close()
+    if updated == 0:
+        return f"לא נמצאו אימוני {workout_type} בתכנית"
+    return f"עודכן קצב יעד ל-{updated} אימוני {workout_type}: {new_pace}"
+
+
+@mcp.tool()
 def get_weekly_stats() -> dict:
     """Get this week's runs, weight entries, nutrition logs, and plan progress."""
     week_ago = (date.today() - timedelta(days=7)).isoformat()
