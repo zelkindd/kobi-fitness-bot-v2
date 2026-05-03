@@ -89,6 +89,44 @@ def get_latest_activity() -> dict:
     return {"error": "לא נמצאה ריצה אחרונה בסטרבה"}
 
 
+@mcp.tool()
+def estimate_max_hr_from_strava() -> dict:
+    """
+    Scan the last 100 Strava activities and return the highest recorded heart rate.
+    This is a real-world estimate of the user's max HR — more accurate than a formula.
+    Call this when the user asks about max HR or when get_hr_zones returns an error.
+    """
+    try:
+        token = get_access_token()
+    except Exception as e:
+        return {"error": f"לא הצלחתי להתחבר לסטרבה: {e}"}
+
+    resp = requests.get(
+        "https://www.strava.com/api/v3/athlete/activities",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"per_page": 100}
+    )
+    resp.raise_for_status()
+    activities = resp.json()
+
+    max_hr = 0
+    max_hr_activity = None
+    for a in activities:
+        hr = a.get("max_heartrate") or 0
+        if hr > max_hr:
+            max_hr = hr
+            max_hr_activity = {"date": a["start_date_local"][:10], "name": a.get("name", "")}
+
+    if max_hr == 0:
+        return {"error": "לא נמצאו נתוני דופק בפעילויות האחרונות"}
+
+    return {
+        "max_hr_recorded": max_hr,
+        "from_activity": max_hr_activity,
+        "note": "זהו הדופק המקסימלי שנרשם בסטרבה. כדאי לשמור אותו בפרופיל עם update_profile(max_heart_rate)."
+    }
+
+
 def _parse_splits(detail: dict) -> list:
     splits = []
     for split in detail.get("splits_metric", []):

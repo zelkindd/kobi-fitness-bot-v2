@@ -42,7 +42,7 @@ BUTTON_PROMPTS = {
 }
 
 ONBOARDING_STEPS = ["user_name", "personality", "nutrition_rules", "weight_goal",
-                    "current_weight", "weight_target", "training_days"]
+                    "current_weight", "weight_target", "training_days", "age"]
 ONBOARDING_QUESTIONS = {
     "user_name": "היי! אני קובי, המאמן האישי שלך. מה שמך?",
     "personality": "נעים מאוד! איך אתה רוצה שאאמן אותך — ישיר, מעודד, קשוח, או ידידותי?",
@@ -50,7 +50,8 @@ ONBOARDING_QUESTIONS = {
     "weight_goal": "מה המטרה שלך במשקל? לרדת, לשמור, לעלות — ספר לי.",
     "current_weight": "מה משקלך הנוכחי בק״ג?",
     "weight_target": "מה משקל היעד שלך בק״ג? (אפשר לשלוח 'דלג')",
-    "training_days": "האחרון — כמה ימים בשבוע אתה רוצה להתאמן? רק מספר.",
+    "training_days": "כמה ימים בשבוע אתה רוצה להתאמן? רק מספר.",
+    "age": "מה גילך? (עוזר לי לחשב אזורי דופק — אפשר לשלוח 'דלג')",
 }
 
 
@@ -189,7 +190,11 @@ def build_system_prompt() -> str:
         "1) יצא מהר מדי — האם הק״מ הראשון היה מהיר יותר ב-15+ שניות מהממוצע? "
         "2) סיום חזק — האם הק״מ האחרון היה מהיר מהראשון (negative split)? "
         "3) עקביות — האם הפרש הקצב בין הק״מ המהיר לאיטי עלה על 30 שניות? "
-        "אמור רק מה שמצאת, בקצרה. אל תנתח יותר מ-3 הדברים האלה."
+        "אמור רק מה שמצאת, בקצרה. אל תנתח יותר מ-3 הדברים האלה.\n\n"
+        "כשמשתמש שואל על דופק או אם הקצב מתאים לו: השתמש ב-get_hr_zones כדי לחשב את אזורי הדופק שלו, "
+        "ואז השווה את הדופק הממוצע שלו בריצות האחרונות לאזור המתאים לסוג הריצה. "
+        "ריצה קלה צריכה להיות באזור 2, טמפו באזור 4, אינטרוולים באזור 5. "
+        "אם אין max_heart_rate בפרופיל — השתמש ב-estimate_max_hr_from_strava ואז שמור את התוצאה עם update_profile."
     )
 
 
@@ -210,6 +215,11 @@ async def advance_onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE,
             await update.message.reply_text("רק מספר, כמו 3 או 5.")
             return
         await call_tool("update_profile", {"field": "training_days", "value": str(max(1, min(7, int(match.group()))))})
+    elif step == "age":
+        match = re.search(r"\d+", text)
+        if match:
+            await call_tool("update_profile", {"field": "age", "value": match.group()})
+        # no match = skip
     elif step == "current_weight":
         match = re.search(r"\d+\.?\d*", text)
         if not match:

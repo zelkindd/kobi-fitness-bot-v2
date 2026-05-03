@@ -28,7 +28,9 @@ def init_db():
         nutrition_rules TEXT,
         weight_goal TEXT,
         training_days INTEGER,
-        weight_target REAL
+        weight_target REAL,
+        age INTEGER,
+        max_heart_rate INTEGER
     )''')
 
     c.execute('''CREATE TABLE IF NOT EXISTS runs (
@@ -86,12 +88,14 @@ def init_db():
         distance_km REAL
     )''')
 
-    for col, coltype in [("weight_target", "REAL"), ("workout_type", "TEXT")]:
+    for col, coltype in [("weight_target", "REAL"), ("age", "INTEGER"), ("max_heart_rate", "INTEGER")]:
         try:
             c.execute(f"ALTER TABLE user_profile ADD COLUMN {col} {coltype}")
             conn.commit()
         except sqlite3.OperationalError:
             pass
+
+    for col, coltype in [("workout_type", "TEXT")]:
         try:
             c.execute(f"ALTER TABLE runs ADD COLUMN {col} {coltype}")
             conn.commit()
@@ -126,6 +130,8 @@ def get_profile() -> dict:
         "weight_goal": row[5],
         "training_days": row[6],
         "weight_target": row[7] if len(row) > 7 else None,
+        "age": row[8] if len(row) > 8 else None,
+        "max_heart_rate": row[9] if len(row) > 9 else None,
     }
 
 
@@ -488,6 +494,45 @@ def update_workout_paces(workout_type: str, new_pace: str) -> str:
     if updated == 0:
         return f"לא נמצאו אימוני {workout_type} בתכנית"
     return f"עודכן קצב יעד ל-{updated} אימוני {workout_type}: {new_pace}"
+
+
+@mcp.tool()
+def get_hr_zones() -> dict:
+    """
+    Calculate heart rate training zones based on the user's max HR.
+    If max_heart_rate is not set in profile, returns an estimate based on age (220 - age).
+    Returns zones 1-5 with bpm ranges and what each zone means for training.
+    Use this whenever analysing whether the user's run HR was appropriate for the workout type.
+    """
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("SELECT max_heart_rate, age FROM user_profile WHERE id=1")
+    row = c.fetchone()
+    conn.close()
+
+    max_hr = row[0] if row and row[0] else None
+    age = row[1] if row and row[1] else None
+    estimated = False
+
+    if not max_hr:
+        if age:
+            max_hr = 220 - age
+            estimated = True
+        else:
+            return {"error": "אין max_heart_rate או גיל בפרופיל. בקש מהמשתמש להזין את גילו."}
+
+    zones = {
+        "max_hr": max_hr,
+        "estimated": estimated,
+        "zones": [
+            {"zone": 1, "name": "התאוששות",  "min": int(max_hr * 0.50), "max": int(max_hr * 0.60), "use": "חימום, קירור"},
+            {"zone": 2, "name": "בסיס אירובי", "min": int(max_hr * 0.60), "max": int(max_hr * 0.70), "use": "ריצות קלות, בניית סיבולת"},
+            {"zone": 3, "name": "אירובי",      "min": int(max_hr * 0.70), "max": int(max_hr * 0.80), "use": "ריצות נפח"},
+            {"zone": 4, "name": "סף",          "min": int(max_hr * 0.80), "max": int(max_hr * 0.90), "use": "טמפו, ריצות סף"},
+            {"zone": 5, "name": "מקסימום",     "min": int(max_hr * 0.90), "max": max_hr,             "use": "אינטרוולים"},
+        ]
+    }
+    return zones
 
 
 @mcp.tool()
