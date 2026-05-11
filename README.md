@@ -128,6 +128,7 @@ Keyboard buttons: `📊 סיכום`, `🗓 תכנית`, `📈 התקדמות`, `
 | Tool | Description |
 |---|---|
 | `recommend_next_workout` | **New in v2.1.** Full Python decision tree returning a structured recommendation with `distance_km`, `pace_range`, `workout_type`, `intensity_note`, and `rationale_he`. Call this whenever the user asks what to run. See decision logic below. |
+| `get_hr_pace_analysis` | **New in v2.2.** Groups last 20 runs by workout type, splits into early/late halves, and compares HR and pace trends. Returns a per-type classification (מצוין / טוב / יציב / לבדוק) with a Hebrew note and an overall `summary_he`. Call this when the user asks about fitness progress or whether they're improving. |
 
 #### Nutrition
 
@@ -236,6 +237,15 @@ This means DeepSeek always knows the current date and run history before it read
 The production `kobi.db` has a legacy `workout_type` column in `user_profile` (added by an old migration) that sits between `weight_target` and `age`. `get_profile()` was updated in v2.1 to use explicit `SELECT` column names instead of positional `SELECT *`, so it reads the correct values regardless of extra columns.
 
 ---
+
+## v2.2 changelog
+
+| # | Change | File | Why |
+|---|---|---|---|
+| 1 | `get_weekly_stats` uses Israeli Sunday–Saturday week boundary | `mcp_sqlite_server.py` | Was using rolling 7-day window, not a real week |
+| 2 | New tool `get_hr_pace_analysis` | `mcp_sqlite_server.py` | Analyzes HR vs pace trend across runs — detects fitness gain, plateau, or overtraining |
+| 3 | Fixed 📈 התקדמות button to use a fixed 4-section template | `bot.py` | Response was free-form and inconsistent each time |
+| 4 | Added `CLAUDE.md` | project root | Instructs Claude to auto-update README and commit/push after every code change |
 
 ## v2.1 changelog
 

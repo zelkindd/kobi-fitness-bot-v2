@@ -345,6 +345,111 @@ def get_runs_by_type(workout_type: str, limit: int = 6) -> list:
 
 
 @mcp.tool()
+def get_hr_pace_analysis(limit: int = 20) -> dict:
+    """
+    Analyze the relationship between heart rate and pace across recent runs.
+    Groups runs by workout type and computes:
+    - Whether aerobic efficiency is improving (same pace, lower HR) or the runner is getting faster (same HR, faster pace)
+    - HR and pace trend direction over time
+    - A Hebrew summary per workout type and overall
+    Call this when the user asks about fitness progress, HR trends, or whether they're getting fitter.
+    """
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT date, workout_type, pace, avg_heart_rate FROM runs "
+        "WHERE pace IS NOT NULL AND pace != '' AND avg_heart_rate IS NOT NULL AND avg_heart_rate > 0 "
+        "ORDER BY date ASC LIMIT ?",
+        (limit,)
+    )
+    rows = c.fetchall()
+    conn.close()
+
+    if not rows:
+        return {"error": "אין נתוני ריצה עם קצב ודופק"}
+
+    # Group by workout type
+    by_type: dict = {}
+    for date_str, wtype, pace_str, hr in rows:
+        key = wtype if wtype else "ריצה כללית"
+        pace_secs = _pace_str_to_secs(pace_str)
+        if pace_secs <= 0 or hr <= 0:
+            continue
+        by_type.setdefault(key, []).append({
+            "date": date_str,
+            "pace_secs": pace_secs,
+            "pace_str": _secs_to_pace_str(pace_secs),
+            "hr": hr,
+            # efficiency index: HR per second of pace — lower is better (low HR at fast pace)
+            "efficiency": round(hr / pace_secs, 4),
+        })
+
+    results = {}
+    summary_lines = []
+
+    for wtype, runs in by_type.items():
+        if len(runs) < 2:
+            results[wtype] = {"runs": runs, "note_he": "רק ריצה אחת — אין מספיק נתונים להשוואה"}
+            continue
+
+        first_half = runs[:len(runs) // 2]
+        second_half = runs[len(runs) // 2:]
+
+        avg_pace_early = sum(r["pace_secs"] for r in first_half) / len(first_half)
+        avg_pace_late  = sum(r["pace_secs"] for r in second_half) / len(second_half)
+        avg_hr_early   = sum(r["hr"] for r in first_half) / len(first_half)
+        avg_hr_late    = sum(r["hr"] for r in second_half) / len(second_half)
+
+        pace_delta = avg_pace_late - avg_pace_early   # negative = faster
+        hr_delta   = avg_hr_late  - avg_hr_early      # negative = lower HR
+
+        # Classify the trend
+        faster = pace_delta < -5       # >5s/km faster
+        slower = pace_delta > 5
+        lower_hr = hr_delta < -3       # >3bpm lower
+        higher_hr = hr_delta > 3
+
+        if faster and lower_hr:
+            trend = "מצוין"
+            note = f"רצת {abs(int(pace_delta))} שניות יותר מהר וגם הדופק ירד ב־{abs(int(hr_delta))} פעימות — שיפור כושר ברור"
+        elif faster and not higher_hr:
+            trend = "טוב"
+            note = f"קצב השתפר ב־{abs(int(pace_delta))} שניות לק״מ ללא עלייה בדופק"
+        elif lower_hr and not slower:
+            trend = "טוב"
+            note = f"דופק ירד ב־{abs(int(hr_delta))} פעימות באותו קצב בערך — היכולת האירובית משתפרת"
+        elif slower and higher_hr:
+            trend = "לבדוק"
+            note = f"קצב ירד ב־{abs(int(pace_delta))} שניות ודופק עלה ב־{abs(int(hr_delta))} פעימות — ייתכן עייפות או אימון יתר"
+        elif higher_hr and not faster:
+            trend = "לבדוק"
+            note = f"דופק עלה ב־{abs(int(hr_delta))} פעימות ללא שיפור בקצב — שווה לבדוק מנוחה ושינה"
+        else:
+            trend = "יציב"
+            note = "קצב ודופק יציבים — אפשר להוסיף עומס בהדרגה"
+
+        results[wtype] = {
+            "run_count": len(runs),
+            "date_range": f"{runs[0]['date']} → {runs[-1]['date']}",
+            "avg_pace_early": _secs_to_pace_str(int(avg_pace_early)),
+            "avg_pace_late": _secs_to_pace_str(int(avg_pace_late)),
+            "avg_hr_early": round(avg_hr_early),
+            "avg_hr_late": round(avg_hr_late),
+            "pace_change_sec": int(pace_delta),
+            "hr_change_bpm": int(hr_delta),
+            "trend": trend,
+            "note_he": note,
+            "runs": runs,
+        }
+        summary_lines.append(f"{wtype}: {note}")
+
+    return {
+        "by_type": results,
+        "summary_he": " | ".join(summary_lines) if summary_lines else "אין מספיק נתונים",
+    }
+
+
+@mcp.tool()
 def log_km_splits(run_date: str, splits: list) -> str:
     """
     Save per-km split data for a run.
@@ -757,18 +862,21 @@ def get_hr_zones() -> dict:
 @mcp.tool()
 def get_weekly_stats() -> dict:
     """Get this week's runs, weight entries, nutrition logs, and plan progress."""
-    week_ago = (date.today() - timedelta(days=7)).isoformat()
+    # Israeli week: Sunday–Saturday. Python weekday(): Mon=0 … Sun=6
+    today = date.today()
+    days_since_sunday = (today.weekday() + 1) % 7
+    week_start = (today - timedelta(days=days_since_sunday)).isoformat()
     conn = get_connection()
     c = conn.cursor()
 
-    c.execute("SELECT date, distance, pace, avg_heart_rate, workout_type FROM runs WHERE date >= ? ORDER BY date", (week_ago,))
+    c.execute("SELECT date, distance, pace, avg_heart_rate, workout_type FROM runs WHERE date >= ? ORDER BY date", (week_start,))
     runs = [{"date": r[0], "distance_km": r[1], "pace": r[2], "avg_heart_rate": r[3], "workout_type": r[4]}
             for r in c.fetchall()]
 
-    c.execute("SELECT date, weight FROM weight WHERE date >= ? ORDER BY date", (week_ago,))
+    c.execute("SELECT date, weight FROM weight WHERE date >= ? ORDER BY date", (week_start,))
     weights = [{"date": r[0], "weight_kg": r[1]} for r in c.fetchall()]
 
-    c.execute("SELECT date, description, calories FROM nutrition WHERE date >= ? ORDER BY date", (week_ago,))
+    c.execute("SELECT date, description, calories FROM nutrition WHERE date >= ? ORDER BY date", (week_start,))
     nutrition = [{"date": r[0], "description": r[1], "calories": r[2]} for r in c.fetchall()]
 
     c.execute("SELECT planned_workout FROM plan_execution WHERE completed=1 ORDER BY date DESC LIMIT 1")
