@@ -1,4 +1,4 @@
-# Kobi Fitness Bot v2.3
+# Kobi Fitness Bot v2.2
 
 Personal Telegram fitness coach powered by DeepSeek AI and MCP architecture. Coaches entirely in Hebrew. No keywords needed — just talk to it.
 
@@ -6,8 +6,7 @@ Personal Telegram fitness coach powered by DeepSeek AI and MCP architecture. Coa
 
 ## What it does
 
-- **Auto-syncs runs from Strava** — Strava webhook fires when you finish a run; Kobi logs it and sends you a Telegram notification automatically
-- Pulls your latest run from Strava on demand and stores it with per-km split data
+- Pulls your latest run from Strava and stores it with per-km split data
 - Compares every logged run against your loaded training plan and auto-advances your position in the plan when a workout matches
 - Recommends the next workout with full Python-computed logic: distance, pace range, workout type, and a one-line Hebrew rationale
 - Injects live context (today's date in Hebrew, days since last run, last run summary, plan position) into every LLM call — so the model never has to compute dates itself
@@ -23,19 +22,14 @@ Personal Telegram fitness coach powered by DeepSeek AI and MCP architecture. Coa
 ```
 Telegram
    ↓
-bot.py  (Telegram host + DeepSeek agent loop + aiohttp webhook server)
+bot.py  (Telegram host + DeepSeek agent loop)
    │
    ├── calls get_current_context() once per message
    │   → injects live "מצב נוכחי" block into system prompt
    │
-   ├── DeepSeek API  ←→  MCP Tools (discovered at startup, cached)
-   │                     ├── mcp_sqlite_server.py  (23 tools)
-   │                     └── mcp_strava_server.py  (3 Strava tools)
-   │
-   └── aiohttp webhook server on port 8080
-       → nginx proxies GET/POST /strava/webhook → 127.0.0.1:8080
-       → Strava pushes activity events here
-       → auto log_run + log_km_splits + Telegram notification
+   └── DeepSeek API  ←→  MCP Tools (discovered at startup, cached)
+                         ├── mcp_sqlite_server.py  (23 tools)
+                         └── mcp_strava_server.py  (3 Strava tools)
 ```
 
 DeepSeek receives a system prompt with hard-coded current facts (date, days since last run, plan position) plus a full tool list. It decides which tools to call. All coaching *reasoning* — workout recommendations, plan matching, pace calculations — lives in deterministic Python tools, not in the prompt. The model's job is orchestration and narration.
@@ -48,7 +42,7 @@ Tool schemas are discovered from both MCP stdio servers once at startup via `_lo
 
 | File | Purpose |
 |---|---|
-| `bot.py` | Telegram bot, DeepSeek agent loop, system prompt builder, aiohttp Strava webhook server |
+| `bot.py` | Telegram bot, DeepSeek agent loop, system prompt builder |
 | `mcp_sqlite_server.py` | FastMCP server — 22 SQLite-backed tools |
 | `mcp_strava_server.py` | FastMCP server — 3 Strava API tools |
 | `kobi.db` | SQLite database (not committed) |
@@ -243,39 +237,6 @@ This means DeepSeek always knows the current date and run history before it read
 The production `kobi.db` has a legacy `workout_type` column in `user_profile` (added by an old migration) that sits between `weight_target` and `age`. `get_profile()` was updated in v2.1 to use explicit `SELECT` column names instead of positional `SELECT *`, so it reads the correct values regardless of extra columns.
 
 ---
-
-## Strava Webhook
-
-Kobi runs an aiohttp server on `127.0.0.1:8080` alongside the Telegram polling loop. Nginx routes `GET/POST /strava/webhook` to it.
-
-**Verification (GET):** Strava sends `hub.mode=subscribe`, `hub.verify_token`, `hub.challenge` — Kobi returns `{"hub.challenge": "..."}` if the token matches `STRAVA_VERIFY_TOKEN` in `.env`.
-
-**Events (POST):** When Strava fires an `activity create` event, Kobi:
-1. Fetches the full activity from Strava API by `object_id`
-2. Calls `log_run` to save distance, pace, HR, duration
-3. Calls `log_km_splits` to save per-km split data
-4. Sends a Telegram message: "זיהיתי ריצה חדשה בסטרבה — X ק״מ ב-Y/ק״מ דופק Z. שמרתי אותה."
-5. If the run matched the next planned workout and auto-advanced the plan, adds that to the notification
-
-**Register the webhook with Strava** (one-time, run after any server IP change):
-```bash
-curl -X POST https://www.strava.com/api/v3/push_subscriptions \
-  -F client_id=232444 \
-  -F client_secret=49edc5db9f87747a5a44441e257336ef3489f7df \
-  -F callback_url=http://151.145.95.15/strava/webhook \
-  -F verify_token=kobi-strava-verify
-```
-
----
-
-## v2.3 changelog
-
-| # | Change | File | Why |
-|---|---|---|---|
-| 1 | Strava webhook server (aiohttp on port 8080) | `bot.py` | Auto-log runs from Strava without user input |
-| 2 | nginx `/strava/webhook` → `127.0.0.1:8080` | `/etc/nginx/sites-enabled/kobi-strava-webhook.conf` | Expose webhook on public port 80 |
-| 3 | `STRAVA_VERIFY_TOKEN` added to `.env` | `.env` | Webhook verification secret |
-| 4 | `aiohttp` added to dependencies | `requirements.txt` | Async HTTP server for webhook |
 
 ## v2.2 changelog
 

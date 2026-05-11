@@ -9,17 +9,12 @@ from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, fil
 from dotenv import load_dotenv
 from openai import OpenAI
 import os
-import aiohttp
-from aiohttp import web
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 ALLOWED_USER_ID = 5748496029
-STRAVA_VERIFY_TOKEN = os.getenv("STRAVA_VERIFY_TOKEN", "kobi-strava-verify")
-WEBHOOK_PORT = 8080
-_telegram_app = None
 
 ai = OpenAI(
     api_key=os.getenv("DEEPSEEK_API_KEY"),
@@ -493,118 +488,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def _get_strava_token() -> str:
-    async with aiohttp.ClientSession() as session:
-        async with session.post("https://www.strava.com/oauth/token", data={
-            "client_id": os.getenv("STRAVA_CLIENT_ID"),
-            "client_secret": os.getenv("STRAVA_CLIENT_SECRET"),
-            "refresh_token": os.getenv("STRAVA_REFRESH_TOKEN"),
-            "grant_type": "refresh_token"
-        }) as resp:
-            data = await resp.json()
-            return data["access_token"]
-
-
-async def _fetch_strava_activity(activity_id: int) -> dict:
-    token = await _get_strava_token()
-    async with aiohttp.ClientSession() as session:
-        async with session.get(
-            f"https://www.strava.com/api/v3/activities/{activity_id}",
-            headers={"Authorization": f"Bearer {token}"}
-        ) as resp:
-            return await resp.json()
-
-
-async def process_new_strava_activity(activity_id: int):
-    try:
-        detail = await _fetch_strava_activity(activity_id)
-
-        if detail.get("type") != "Run" and detail.get("sport_type") != "Run":
-            return
-
-        distance_km = round(detail["distance"] / 1000, 2)
-        moving_time = detail["moving_time"]
-        duration = f"{moving_time // 60}:{moving_time % 60:02d}"
-        pace_sec = moving_time / (detail["distance"] / 1000) if detail["distance"] > 0 else 0
-        pace = f"{int(pace_sec // 60)}:{int(pace_sec % 60):02d}"
-        avg_hr = int(detail["average_heartrate"]) if detail.get("average_heartrate") else None
-        run_date = detail["start_date_local"][:10]
-        workout_name = detail.get("name", "ריצה")
-
-        log_result = await call_tool("log_run", {
-            "date_str": run_date,
-            "distance_km": distance_km,
-            "duration": duration,
-            "pace": pace,
-            "avg_heart_rate": avg_hr or 0,
-            "feedback": f"מסטרבה: {workout_name}",
-            "workout_type": ""
-        })
-
-        splits = []
-        for split in detail.get("splits_metric", []):
-            elapsed = split.get("moving_time", 0)
-            dist = split.get("distance", 0)
-            if dist > 0 and elapsed > 0:
-                spm = elapsed / (dist / 1000)
-                splits.append({
-                    "km": split.get("split", len(splits) + 1),
-                    "pace": f"{int(spm // 60)}:{int(spm % 60):02d}",
-                    "distance_km": round(dist / 1000, 3)
-                })
-        if splits:
-            await call_tool("log_km_splits", {"run_date": run_date, "splits": splits})
-
-        if _telegram_app:
-            hr_str = f" דופק {avg_hr}" if avg_hr else ""
-            plan_note = ""
-            if "סימנתי" in log_result:
-                plan_note = " התקדמות בתכנית עודכנה."
-            msg = (
-                f"זיהיתי ריצה חדשה בסטרבה — {distance_km} ק״מ ב-{pace}/ק״מ{hr_str}."
-                f" שמרתי אותה.{plan_note}"
-            )
-            await _telegram_app.bot.send_message(chat_id=ALLOWED_USER_ID, text=msg)
-
-    except Exception as e:
-        logging.error(f"Strava webhook processing failed: {e}")
-
-
-async def strava_verify(request):
-    mode = request.rel_url.query.get("hub.mode")
-    token = request.rel_url.query.get("hub.verify_token")
-    challenge = request.rel_url.query.get("hub.challenge")
-    if mode == "subscribe" and token == STRAVA_VERIFY_TOKEN:
-        return web.json_response({"hub.challenge": challenge})
-    return web.Response(status=403)
-
-
-async def strava_event(request):
-    try:
-        data = await request.json()
-        if data.get("object_type") == "activity" and data.get("aspect_type") == "create":
-            asyncio.create_task(process_new_strava_activity(data["object_id"]))
-    except Exception as e:
-        logging.error(f"Strava webhook parse error: {e}")
-    return web.Response(status=200)
-
-
-async def start_webhook_server():
-    webhook_app = web.Application()
-    webhook_app.router.add_get("/strava/webhook", strava_verify)
-    webhook_app.router.add_post("/strava/webhook", strava_event)
-    runner = web.AppRunner(webhook_app)
-    await runner.setup()
-    site = web.TCPSite(runner, "127.0.0.1", WEBHOOK_PORT)
-    await site.start()
-    logging.info(f"Strava webhook listening on port {WEBHOOK_PORT}")
-
-
 async def on_startup(app):
-    global _telegram_app
-    _telegram_app = app
     await _load_tools()
-    asyncio.create_task(start_webhook_server())
     from telegram import BotCommand
     await app.bot.set_my_commands([
         BotCommand("help", "מה שקובי יודע לעשות"),
