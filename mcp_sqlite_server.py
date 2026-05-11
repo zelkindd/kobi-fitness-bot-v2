@@ -11,9 +11,59 @@ load_dotenv()
 DB_PATH = os.path.join(os.path.dirname(__file__), "kobi.db")
 mcp = FastMCP("kobi-sqlite")
 
+PLAN_MATCH_DISTANCE_TOLERANCE = 0.20
+
+HEBREW_WEEKDAYS = ["שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת", "ראשון"]
+HEBREW_MONTHS = ["ינואר", "פברואר", "מרץ", "אפריל", "מאי", "יוני",
+                 "יולי", "אוגוסט", "ספטמבר", "אוקטובר", "נובמבר", "דצמבר"]
+
 
 def get_connection():
     return sqlite3.connect(DB_PATH)
+
+
+def _pace_str_to_secs(pace_str: str) -> int:
+    """Convert '6:30' or '6:30/km' to seconds (390). Returns 0 on failure."""
+    if not pace_str:
+        return 0
+    try:
+        p = str(pace_str).strip().replace("/km", "").strip()
+        if "-" in p:
+            parts = p.split("-")
+            vals = [_pace_str_to_secs(x.strip()) for x in parts]
+            vals = [v for v in vals if v > 0]
+            return sum(vals) // len(vals) if vals else 0
+        m, s = p.split(":")
+        return int(m) * 60 + int(s)
+    except Exception:
+        return 0
+
+
+def _secs_to_pace_str(secs: int) -> str:
+    """Convert 390 to '6:30'."""
+    if secs <= 0:
+        return "לפי תחושה"
+    return f"{secs // 60}:{secs % 60:02d}"
+
+
+def _make_easy_pace_range(planned_pace: str, runs: list) -> str:
+    """Return a relaxed pace range: slow end of planned range +15s, or avg run pace +15s."""
+    if planned_pace:
+        p = planned_pace.strip().replace("/km", "")
+        if "-" in p:
+            vals = [_pace_str_to_secs(x.strip()) for x in p.split("-")]
+            vals = [v for v in vals if v > 0]
+            slow = max(vals) if vals else 0
+        else:
+            slow = _pace_str_to_secs(p)
+        if slow > 0:
+            return f"{_secs_to_pace_str(slow)}-{_secs_to_pace_str(slow + 15)}"
+    secs_list = [_pace_str_to_secs(r.get("pace", "")) for r in (runs or [])]
+    secs_list = [s for s in secs_list if s > 0]
+    if secs_list:
+        avg = sum(secs_list) // len(secs_list)
+        return f"{_secs_to_pace_str(avg)}-{_secs_to_pace_str(avg + 15)}"
+    return "לפי תחושה"
 
 
 def init_db():
@@ -117,28 +167,31 @@ def get_profile() -> dict:
     """Get the user's profile: name, coaching style, nutrition rules, weight goal, training days, weight target."""
     conn = get_connection()
     c = conn.cursor()
-    c.execute("SELECT * FROM user_profile WHERE id=1")
+    c.execute(
+        "SELECT bot_name, user_name, personality, nutrition_rules, weight_goal, "
+        "training_days, weight_target, age, max_heart_rate FROM user_profile WHERE id=1"
+    )
     row = c.fetchone()
     conn.close()
     if not row:
         return {}
     return {
-        "bot_name": row[1],
-        "user_name": row[2],
-        "personality": row[3],
-        "nutrition_rules": row[4],
-        "weight_goal": row[5],
-        "training_days": row[6],
-        "weight_target": row[7] if len(row) > 7 else None,
-        "age": row[8] if len(row) > 8 else None,
-        "max_heart_rate": row[9] if len(row) > 9 else None,
+        "bot_name": row[0],
+        "user_name": row[1],
+        "personality": row[2],
+        "nutrition_rules": row[3],
+        "weight_goal": row[4],
+        "training_days": row[5],
+        "weight_target": row[6],
+        "age": row[7],
+        "max_heart_rate": row[8],
     }
 
 
 @mcp.tool()
 def update_profile(field: str, value: str) -> str:
     """Update a single field in the user profile. Fields: user_name, personality, nutrition_rules, weight_goal, training_days, weight_target."""
-    allowed = {"user_name", "personality", "nutrition_rules", "weight_goal", "training_days", "weight_target"}
+    allowed = {"user_name", "personality", "nutrition_rules", "weight_goal", "training_days", "weight_target", "age", "max_heart_rate"}
     if field not in allowed:
         return f"שדה לא חוקי: {field}"
     conn = get_connection()
@@ -147,6 +200,57 @@ def update_profile(field: str, value: str) -> str:
     conn.commit()
     conn.close()
     return "עודכן בהצלחה"
+
+
+@mcp.tool()
+def get_current_context() -> dict:
+    """Return today's date, days since last run, last run summary, and current plan position."""
+    today = date.today()
+    weekday_he = HEBREW_WEEKDAYS[today.weekday()]
+    month_he = HEBREW_MONTHS[today.month - 1]
+    today_hebrew = f"יום {weekday_he}, {today.day} ב{month_he} {today.year}"
+
+    conn = get_connection()
+    c = conn.cursor()
+
+    c.execute("SELECT date, distance, workout_type FROM runs ORDER BY date DESC LIMIT 1")
+    row = c.fetchone()
+    last_run = None
+    days_since = None
+    if row:
+        last_run = {"date": row[0], "distance_km": row[1], "workout_type": row[2]}
+        try:
+            last_date = date.fromisoformat(row[0])
+            days_since = (today - last_date).days
+        except Exception:
+            pass
+
+    c.execute("SELECT planned_workout FROM plan_execution WHERE completed=1 ORDER BY date DESC LIMIT 1")
+    last_exec = c.fetchone()
+    current_plan_position = None
+    if last_exec:
+        try:
+            last_id = int(last_exec[0])
+            c.execute(
+                "SELECT week, day FROM training_plan WHERE id > ? AND target_distance > 0 ORDER BY week ASC, id ASC LIMIT 1",
+                (last_id,)
+            )
+            next_row = c.fetchone()
+            if next_row:
+                current_plan_position = {"week": next_row[0], "run_num": next_row[1]}
+        except Exception:
+            pass
+
+    conn.close()
+
+    return {
+        "today_iso": today.isoformat(),
+        "today_hebrew": today_hebrew,
+        "weekday": weekday_he,
+        "days_since_last_run": days_since,
+        "last_run": last_run,
+        "current_plan_position": current_plan_position,
+    }
 
 
 # ── Weight ────────────────────────────────────────────────────────────────────
@@ -187,8 +291,28 @@ def log_run(date_str: str, distance_km: float, duration: str, pace: str,
         (date_str, distance_km, duration, pace, avg_heart_rate, feedback, workout_type)
     )
     conn.commit()
+
+    plan_msg = ""
+    try:
+        planned = get_next_planned_workout()
+        if planned and planned.get("target_distance"):
+            planned_dist = planned["target_distance"]
+            planned_type = (planned.get("workout_type") or "").lower()
+            actual_type = (workout_type or "").lower()
+            types_match = not planned_type or not actual_type or actual_type == planned_type
+            dist_pct = abs(distance_km - planned_dist) / planned_dist
+            if types_match and dist_pct <= PLAN_MATCH_DISTANCE_TOLERANCE:
+                c.execute(
+                    "INSERT INTO plan_execution (date, planned_workout, completed, distance_diff) VALUES (?,?,1,?)",
+                    (date_str, str(planned["id"]), round(distance_km - planned_dist, 2))
+                )
+                conn.commit()
+                plan_msg = f" סימנתי את שבוע {planned['week']} ריצה {planned['run_num']} כבוצע."
+    except Exception:
+        pass
+
     conn.close()
-    return "ריצה נשמרה בהצלחה"
+    return f"ריצה נשמרה.{plan_msg}" if plan_msg else "ריצה נשמרה בהצלחה"
 
 
 @mcp.tool()
@@ -364,6 +488,101 @@ def get_next_planned_workout() -> dict:
 
     return {"id": e[0], "week": e[1], "run_num": e[2], "workout_type": e[3],
             "target_distance": e[4], "target_pace": e[5], "notes": e[6]}
+
+
+@mcp.tool()
+def recommend_next_workout() -> dict:
+    """
+    Recommend the next workout based on training plan position, days since last run,
+    and recent workout intensity. Returns a structured recommendation in Hebrew.
+    Call this whenever the user asks what to run, what's next, or is about to start a run.
+    """
+    runs = get_recent_runs(limit=5)
+    planned = get_next_planned_workout()
+
+    days_since = 999
+    last_run = None
+    if runs:
+        last_run = runs[0]
+        try:
+            last_date = date.fromisoformat(last_run["date"])
+            days_since = (date.today() - last_date).days
+        except Exception:
+            pass
+
+    # Case 1: Long break — 4+ days since last run
+    if days_since >= 4:
+        if planned and planned.get("target_distance"):
+            dist = round(planned["target_distance"] * 0.80, 1)
+            pace_range = _make_easy_pace_range(planned.get("target_pace", ""), runs)
+        else:
+            recent = runs[:3]
+            dist = round(sum(r["distance_km"] for r in recent) / len(recent) * 0.80, 1) if recent else 5.0
+            pace_range = _make_easy_pace_range("", runs)
+        return {
+            "planned": planned if planned else None,
+            "days_since_last_run": days_since,
+            "needs_recovery": False,
+            "recommended": {
+                "distance_km": dist,
+                "pace_range": pace_range,
+                "workout_type": "Easy Run",
+                "intensity_note": "קל, לא לדחוף",
+            },
+            "rationale_he": f"{days_since} ימים בלי ריצה — חזרה בקלילות, {dist} ק״מ בקצב נוח",
+        }
+
+    # Case 2: Ran today or yesterday after a hard effort
+    hard_types = {"long run", "tempo", "intervals"}
+    if days_since <= 1 and last_run and (last_run.get("workout_type") or "").lower() in hard_types:
+        pace_range = _make_easy_pace_range("", runs)
+        return {
+            "planned": planned if planned else None,
+            "days_since_last_run": days_since,
+            "needs_recovery": True,
+            "recommended": {
+                "distance_km": 5.0,
+                "pace_range": pace_range,
+                "workout_type": "Recovery Jog",
+                "intensity_note": "התאוששות, מאוד קל",
+            },
+            "rationale_he": f"רצת {last_run.get('workout_type', 'ריצה קשה')} לאחרונה — מנוחה או 5 ק״מ התאוששות בלבד",
+        }
+
+    # Case 3: Follow the plan
+    if planned and planned.get("target_distance"):
+        return {
+            "planned": planned,
+            "days_since_last_run": days_since if days_since != 999 else None,
+            "needs_recovery": False,
+            "recommended": {
+                "distance_km": planned["target_distance"],
+                "pace_range": planned.get("target_pace") or "לפי תחושה",
+                "workout_type": planned.get("workout_type", "Easy Run"),
+                "intensity_note": planned.get("notes") or "",
+            },
+            "rationale_he": (
+                f"לפי תכנית: שבוע {planned.get('week')}, ריצה {planned.get('run_num')} — "
+                f"{planned.get('workout_type')} {planned.get('target_distance')} ק״מ"
+            ),
+        }
+
+    # Case 4: No plan loaded
+    recent = runs[:3]
+    avg_dist = round(sum(r["distance_km"] for r in recent) / len(recent), 1) if recent else 5.0
+    pace_range = _make_easy_pace_range("", runs)
+    return {
+        "planned": None,
+        "days_since_last_run": days_since if days_since != 999 else None,
+        "needs_recovery": False,
+        "recommended": {
+            "distance_km": avg_dist,
+            "pace_range": pace_range,
+            "workout_type": "Easy Run",
+            "intensity_note": "קל, לפי תחושה",
+        },
+        "rationale_he": f"אין תכנית טעונה — ריצה קלה {avg_dist} ק״מ בקצב הממוצע שלך",
+    }
 
 
 @mcp.tool()

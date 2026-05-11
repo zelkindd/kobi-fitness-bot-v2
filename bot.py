@@ -119,12 +119,18 @@ async def call_tool(tool_name: str, tool_input: dict) -> str:
             return "בוצע"
 
 
-async def run_agent(user_message: str, system_prompt: str,
-                    image_data: dict = None) -> str:
+async def run_agent(user_message: str, image_data: dict = None) -> str:
     """
-    Agent loop: send message to Claude with tools, execute tool calls,
-    loop until Claude gives a final text answer.
+    Agent loop: send message to DeepSeek with tools, execute tool calls,
+    loop until DeepSeek gives a final text answer.
     """
+    try:
+        ctx_raw = await call_tool("get_current_context", {})
+        ctx = json.loads(ctx_raw)
+    except Exception:
+        ctx = {}
+    system_prompt = build_system_prompt(context=ctx)
+
     tools = _tools_cache
 
     messages = [{"role": "system", "content": system_prompt}] + list(conversation_history)
@@ -173,11 +179,29 @@ async def run_agent(user_message: str, system_prompt: str,
 
 KOBI_VERSION = "2.0 (MCP Agent)"
 
-def build_system_prompt() -> str:
+def build_system_prompt(context: dict = None) -> str:
+    ctx_block = ""
+    if context:
+        lines = ["מצב נוכחי:"]
+        lines.append(f"היום: {context.get('today_hebrew', context.get('today_iso', 'לא ידוע'))}")
+        days = context.get("days_since_last_run")
+        if days is not None:
+            lines.append(f"ימים מהריצה האחרונה: {days}")
+        else:
+            lines.append("אין ריצות רשומות עדיין")
+        last = context.get("last_run")
+        if last:
+            wt = f", {last['workout_type']}" if last.get("workout_type") else ""
+            lines.append(f"ריצה אחרונה: {last.get('date', '')}, {last.get('distance_km', '')} ק״מ{wt}")
+        pos = context.get("current_plan_position")
+        if pos:
+            lines.append(f"מיקום בתכנית: שבוע {pos.get('week')}, ריצה {pos.get('run_num')}")
+        ctx_block = "\n".join(lines) + "\n\n"
+
     return (
         f"אתה קובי, מאמן כושר ותזונה אישי. גרסה: {KOBI_VERSION}. "
         "תמיד כתוב בעברית בלבד — אף מילה באנגלית.\n\n"
-
+        + ctx_block +
         "בתחילת כל תשובה, לפני שאתה כותב מילה, קרא בשקט (ללא הודעה למשתמש):\n"
         "1. get_profile — כדי לדעת פרטי המשתמש.\n"
         "2. get_plan_position — כדי לדעת השבוע והריצה הנוכחיים.\n"
@@ -297,8 +321,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "אם לא מצליח לזהות את האוכל, שאל שאלה קצרה."
     )
 
-    reply = await run_agent(prompt, build_system_prompt(),
-                            image_data={"media_type": "image/jpeg", "data": image_b64})
+    reply = await run_agent(prompt, image_data={"media_type": "image/jpeg", "data": image_b64})
 
     lines = reply.splitlines()
     food_desc = caption or "ארוחה"
@@ -324,7 +347,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Keyboard buttons → translate to Hebrew prompts for Claude
     if text in BUTTON_PROMPTS:
         user_prompt = BUTTON_PROMPTS[text]
-        reply = await run_agent(user_prompt, build_system_prompt())
+        reply = await run_agent(user_prompt)
         add_to_history("user", user_prompt)
         add_to_history("assistant", reply)
         await update.message.reply_text(reply, reply_markup=MAIN_KEYBOARD)
@@ -355,7 +378,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Agent handles everything else
-    reply = await run_agent(text, build_system_prompt())
+    reply = await run_agent(text)
     add_to_history("user", text)
     add_to_history("assistant", reply)
     await update.message.reply_text(reply, reply_markup=MAIN_KEYBOARD)
