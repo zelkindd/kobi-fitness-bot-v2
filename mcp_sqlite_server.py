@@ -283,7 +283,12 @@ def get_recent_weights(limit: int = 10) -> list:
 @mcp.tool()
 def log_run(date_str: str, distance_km: float, duration: str, pace: str,
             avg_heart_rate: int, feedback: str, workout_type: str = "") -> str:
-    """Save a completed run to the database."""
+    """
+    Save a completed run to the database.
+    Returns JSON with plan comparison info for the post-run review.
+    plan_status: 'matched' | 'deviated' | 'none'
+    """
+    import json as _json
     conn = get_connection()
     c = conn.cursor()
     c.execute(
@@ -292,27 +297,48 @@ def log_run(date_str: str, distance_km: float, duration: str, pace: str,
     )
     conn.commit()
 
-    plan_msg = ""
+    result = {"saved": True, "plan_status": "none", "planned_km": None,
+              "planned_type": None, "plan_msg_he": ""}
     try:
         planned = get_next_planned_workout()
         if planned and planned.get("target_distance"):
-            planned_dist = planned["target_distance"]
-            planned_type = (planned.get("workout_type") or "").lower()
-            actual_type = (workout_type or "").lower()
-            types_match = not planned_type or not actual_type or actual_type == planned_type
+            planned_dist = float(planned["target_distance"])
+            planned_type = planned.get("workout_type") or ""
+            result["planned_km"] = planned_dist
+            result["planned_type"] = planned_type
+            result["planned_week"] = planned.get("week")
+            result["planned_run_num"] = planned.get("run_num")
+
             dist_pct = abs(distance_km - planned_dist) / planned_dist
+            actual_type = (workout_type or "").lower()
+            types_match = not planned_type or not actual_type or actual_type == planned_type.lower()
+
             if types_match and dist_pct <= PLAN_MATCH_DISTANCE_TOLERANCE:
+                # Full match — completed
                 c.execute(
                     "INSERT INTO plan_execution (date, planned_workout, completed, distance_diff) VALUES (?,?,1,?)",
                     (date_str, str(planned["id"]), round(distance_km - planned_dist, 2))
                 )
                 conn.commit()
-                plan_msg = f" סימנתי את שבוע {planned['week']} ריצה {planned['run_num']} כבוצע."
+                result["plan_status"] = "matched"
+                result["plan_msg_he"] = f"בדיוק לפי תכנית — שבוע {planned['week']} ריצה {planned['run_num']} בוצע"
+            elif distance_km >= planned_dist * 0.50:
+                # Ran at least 50% of planned — deviated but advance plan
+                c.execute(
+                    "INSERT INTO plan_execution (date, planned_workout, completed, distance_diff) VALUES (?,?,1,?)",
+                    (date_str, str(planned["id"]), round(distance_km - planned_dist, 2))
+                )
+                conn.commit()
+                result["plan_status"] = "deviated"
+                result["plan_msg_he"] = f"{distance_km} במקום {planned_dist} ק״מ — סימנתי ועברנו לריצה הבאה"
+            else:
+                result["plan_status"] = "none"
+                result["plan_msg_he"] = f"ריצה חופשית — {planned_dist} ק״מ של שבוע {planned['week']} עדיין ממתינים"
     except Exception:
         pass
 
     conn.close()
-    return f"ריצה נשמרה.{plan_msg}" if plan_msg else "ריצה נשמרה בהצלחה"
+    return _json.dumps(result, ensure_ascii=False)
 
 
 @mcp.tool()
