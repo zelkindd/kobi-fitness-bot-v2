@@ -29,7 +29,7 @@ bot.py  (Telegram host + DeepSeek agent loop)
    │   → injects live "מצב נוכחי" block into system prompt
    │
    └── DeepSeek API  ←→  MCP Tools (discovered at startup, cached)
-                         ├── mcp_sqlite_server.py  (23 tools)
+                         ├── mcp_sqlite_server.py  (25 tools)
                          └── mcp_strava_server.py  (3 Strava tools)
 ```
 
@@ -85,7 +85,7 @@ sudo journalctl -u kobi -f
 | Command | Description |
 |---|---|
 | `/setplan` | Paste a free-text training plan — DeepSeek parses and stores it |
-| `/setweek 2 1` | Manually set current position in plan (week, run number) |
+| `/setweek 3` | Manually set current plan week (e.g. jump to week 3) |
 | `/settarget 75` | Set weight target in kg |
 | `/setup` | Redo onboarding (name, coaching style, nutrition rules, weight, age) |
 | `/balance` | Check remaining DeepSeek API credit |
