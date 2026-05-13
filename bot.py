@@ -193,9 +193,11 @@ def build_system_prompt(context: dict = None) -> str:
         if last:
             wt = f", {last['workout_type']}" if last.get("workout_type") else ""
             lines.append(f"ריצה אחרונה: {last.get('date', '')}, {last.get('distance_km', '')} ק״מ{wt}")
-        pos = context.get("current_plan_position")
-        if pos:
-            lines.append(f"מיקום בתכנית: שבוע {pos.get('week')}, ריצה {pos.get('run_num')}")
+        plan_week = context.get("current_plan_week")
+        remaining = context.get("remaining_this_week", [])
+        if plan_week:
+            remaining_str = ", ".join(remaining) if remaining else "כל האימונים בוצעו"
+            lines.append(f"שבוע תכנית: {plan_week} | נשאר: {remaining_str}")
         ctx_block = "\n".join(lines) + "\n\n"
 
     return (
@@ -204,7 +206,7 @@ def build_system_prompt(context: dict = None) -> str:
         + ctx_block +
         "בתחילת כל תשובה, לפני שאתה כותב מילה, קרא בשקט (ללא הודעה למשתמש):\n"
         "1. get_profile — כדי לדעת פרטי המשתמש.\n"
-        "2. get_plan_position — כדי לדעת השבוע והריצה הנוכחיים.\n"
+        "2. get_current_week_status — כדי לדעת מה השבוע הנוכחי ומה נשאר לבצע.\n"
         "3. get_recent_runs(limit=3) — כדי לדעת מתי ומה הריצה האחרונה.\n"
         "המידע הזה הוא האמת. אם משהו בשיחה סותר את מה שקראת — האמן בנתוני ה-DB, "
         "אלא אם המשתמש מתקן אותם במפורש.\n\n"
@@ -230,7 +232,7 @@ def build_system_prompt(context: dict = None) -> str:
         "פיצולים: [שורה אחת — יצאת מהר/סיום חזק/עקבי — רק מה שרלוונטי, אחרת 'קצב אחיד']\n"
         "לעומת תכנית: [plan_msg_he מתוך תשובת log_run]\n"
         "דופק: [קרא get_hr_zones והשווה ל-HR בפועל — אזור X, משפט אחד]\n"
-        "הבא: [קרא get_next_planned_workout — סוג ריצה + מרחק]\n\n"
+        "הבא: [קרא get_current_week_status — הסוג הראשון ב-remaining + מרחק]\n\n"
         "לגבי פיצולים: אם יש km_splits — שמור עם log_km_splits ובדוק: "
         "1) ק״מ 1 מהיר ב-15+ שניות מהממוצע = יצאת מהר. "
         "2) ק״מ אחרון מהיר מק״מ ראשון = סיום חזק. "
@@ -240,14 +242,18 @@ def build_system_prompt(context: dict = None) -> str:
         "קרא update_workout_paces ועדכן יעד ב-5-10 שניות. ספר לו. אל תקשה יותר מ-10 שניות.\n\n"
 
         "כשמשתמש שואל על התקדמות או לוחץ על כפתור ההתקדמות:\n"
-        "קרא את הכלים הבאים לפני שאתה כותב מילה: get_weekly_stats, get_hr_pace_analysis, get_next_planned_workout, get_profile.\n"
+        "קרא את הכלים הבאים לפני שאתה כותב מילה: get_weekly_stats, get_hr_pace_analysis, get_current_week_status, get_profile.\n"
         "אחר כך כתוב תשובה בפורמט הקבוע הזה בדיוק — אותם כותרות, אותו סדר, בלי להוסיף ובלי לדלג:\n\n"
         "ריצות השבוע: [סה״כ ק״מ] ק״מ ב-[מספר ריצות] ריצות\n"
         "[לכל ריצה שורה אחת: יום תאריך — X ק״מ קצב Y דופק Z (אם יש דופק)]\n\n"
         "דופק מול קצב: [משפט אחד מה-get_hr_pace_analysis — האם הכושר משתפר, יציב, או יורד]\n\n"
         "משקל: [משקל אחרון] ק״ג — נשאר [הפרש] ק״ג ליעד\n\n"
-        "תכנית: שבוע [X] ריצה [Y] — הבא: [סוג ריצה, מרחק, קצב יעד]\n\n"
+        "תכנית: שבוע [X] — נשאר: [רשימת סוגי ריצה פתוחים] — הבא: [סוג ריצה, מרחק, קצב]\n\n"
         "אל תוסיף כלום מעבר לפורמט הזה. אל תסיים בשאלה.\n\n"
+
+        "כשמשתמש שואל מה נשאר השבוע: קרא get_current_week_status והצג מה בוצע ומה נשאר.\n"
+        "כשמשתמש שואל מה לרוץ היום: קרא get_current_week_status לראות מה פתוח, ואז get_target_pace_for_type לקצב.\n"
+        "אחרי log_run: אם plan_status='extra' — אמור 'ריצה חופשית, לא מסמנת כלום בתכנית'.\n\n"
 
         "כשמשתמש שואל על דופק, אם הקצב מתאים לו, או מה הקצב לריצה הבאה:\n"
         "1. קרא get_next_planned_workout לדעת את סוג הריצה הבאה.\n"
