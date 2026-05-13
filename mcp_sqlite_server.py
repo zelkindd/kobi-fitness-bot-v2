@@ -204,8 +204,11 @@ def init_db():
         distance_diff   REAL
     )''')
 
+    # Migrate: old index was (calendar_week, workout_type) which blocked 2 Easy Runs in a week.
+    # New index: (calendar_week, run_date) — one entry per day per week is the right dedup key.
+    c.execute("DROP INDEX IF EXISTS ux_weekly_exec")
     c.execute('''CREATE UNIQUE INDEX IF NOT EXISTS ux_weekly_exec
-        ON weekly_execution(calendar_week, workout_type)''')
+        ON weekly_execution(calendar_week, run_date)''')
 
     c.execute('''CREATE TABLE IF NOT EXISTS plan_week_position (
         id              INTEGER PRIMARY KEY,
@@ -390,12 +393,18 @@ def log_run(date_str: str, distance_km: float, duration: str, pace: str,
             planned_rows = c.fetchall()
 
             c.execute(
-                "SELECT workout_type FROM weekly_execution WHERE calendar_week=?",
+                "SELECT workout_type, COUNT(*) FROM weekly_execution WHERE calendar_week=? GROUP BY workout_type",
                 (calendar_week_start,)
             )
-            done_types = {r[0] for r in c.fetchall()}
+            done_counts = {r[0]: r[1] for r in c.fetchall()}
 
-            unmatched = [(wtype, dist) for wtype, dist in planned_rows if wtype not in done_types]
+            # Build unmatched list respecting multiple slots of the same type
+            seen = {}
+            unmatched = []
+            for wtype, dist in planned_rows:
+                seen[wtype] = seen.get(wtype, 0) + 1
+                if seen[wtype] > done_counts.get(wtype, 0):
+                    unmatched.append((wtype, dist))
 
             actual_type = (workout_type or "").strip()
             matched_slot = None
@@ -420,7 +429,13 @@ def log_run(date_str: str, distance_km: float, duration: str, pace: str,
                 )
                 conn.commit()
 
-                remaining = [t for t, _ in unmatched if t != matched_slot]
+                # Remove only the first occurrence of the matched slot
+                _rem = list(unmatched)
+                for _i, (_t, _) in enumerate(_rem):
+                    if _t == matched_slot:
+                        del _rem[_i]
+                        break
+                remaining = [t for t, _ in _rem]
                 result["plan_status"] = "matched"
                 result["matched_type"] = matched_slot
                 result["planned_km"] = matched_dist
@@ -706,10 +721,12 @@ def get_current_week_status() -> dict:
     planned_rows = c.fetchall()
 
     c.execute(
-        "SELECT workout_type, run_date, actual_distance FROM weekly_execution WHERE calendar_week=?",
+        "SELECT workout_type, run_date, actual_distance FROM weekly_execution WHERE calendar_week=? ORDER BY id",
         (calendar_week_start,)
     )
-    done_map = {r[0]: {"run_date": r[1], "actual_distance": r[2]} for r in c.fetchall()}
+    done_by_type: dict = {}
+    for wtype, run_date, actual_dist in c.fetchall():
+        done_by_type.setdefault(wtype, []).append({"run_date": run_date, "actual_distance": actual_dist})
 
     conn.close()
 
@@ -717,8 +734,12 @@ def get_current_week_status() -> dict:
         return {"error": f"אין אימונים מוגדרים לשבוע {current_week} בתכנית"}
 
     planned = []
+    slot_idx: dict = {}
     for wtype, target_dist, notes in planned_rows:
-        done_info = done_map.get(wtype)
+        idx = slot_idx.get(wtype, 0)
+        slot_idx[wtype] = idx + 1
+        done_list = done_by_type.get(wtype, [])
+        done_info = done_list[idx] if idx < len(done_list) else None
         planned.append({
             "workout_type": wtype,
             "target_distance": target_dist,

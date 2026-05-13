@@ -1,4 +1,4 @@
-# Kobi Fitness Bot v2.5
+# Kobi Fitness Bot v2.6
 
 Personal Telegram fitness coach powered by DeepSeek AI and MCP architecture. Coaches entirely in Hebrew. No keywords needed — just talk to it.
 
@@ -205,8 +205,8 @@ After every `log_run`:
 1. Calls `_maybe_advance_week()` to auto-advance the plan week if Saturday has passed.
 2. Loads `weekly_plan` rows for the current plan week.
 3. Loads `weekly_execution` rows for the current calendar week (Sunday ISO date as key).
-4. Finds unmatched slots = planned types not yet in `weekly_execution` this calendar week.
-5. Matches `workout_type` against unmatched slots (case-insensitive; `Recovery Jog` aliases to `Easy Run`).
+4. Finds unmatched slots using count-based matching: compares `COUNT(done)` per type vs. `COUNT(planned)` per type. Two `Easy Run` slots in the plan need two `Easy Run` entries in `weekly_execution` to be fully done.
+5. Matches `workout_type` against the first open slot of that type (case-insensitive; `Recovery Jog` aliases to `Easy Run`).
 6. If matched: inserts into `weekly_execution` with distance diff; returns `plan_status="matched"`.
 7. If no match but type given: returns `plan_status="extra"` (free run, no slot consumed).
 8. Returns `remaining_this_week`: list of still-open workout types.
@@ -245,13 +245,24 @@ The production `kobi.db` has a legacy `workout_type` column in `user_profile` (a
 
 ---
 
+## v2.6 changelog
+
+| # | Change | File | Why |
+|---|---|---|---|
+| 1 | `weekly_execution` unique index changed from `(calendar_week, workout_type)` to `(calendar_week, run_date)` | `mcp_sqlite_server.py` | Old index silently dropped the second Easy Run in weeks with two identical slot types |
+| 2 | `log_run` matching changed from set-based to count-based (`done_count < planned_count` per type) | `mcp_sqlite_server.py` | Same bug: second Easy Run was always treated as "already done" |
+| 3 | `get_current_week_status` now returns per-slot done info indexed by occurrence (not by type) | `mcp_sqlite_server.py` | Two Easy Runs in a week now both show correct done/actual_distance |
+| 4 | Backfilled `weekly_execution` for May 10 and May 11 runs | `kobi.db` | Both runs existed in `runs` but were missing from `weekly_execution` due to the above bug |
+
+---
+
 ## v2.5 changelog
 
 | # | Change | File | Why |
 |---|---|---|---|
 | 1 | All `date.today()` → `today_israel()` using `zoneinfo.ZoneInfo("Asia/Jerusalem")` | `mcp_sqlite_server.py` | Server runs UTC; after 9pm Israel time the UTC date was one day behind, causing Kobi to report the wrong day |
 | 2 | New table `weekly_plan` — one row per workout type per week (no day, no target_pace) | `mcp_sqlite_server.py` | Replaces strict ordered plan with a flexible weekly bucket model |
-| 3 | New table `weekly_execution` — one row per completed workout type per calendar week | `mcp_sqlite_server.py` | Tracks which slots are done this week; unique on `(calendar_week, workout_type)` |
+| 3 | New table `weekly_execution` — one row per completed workout slot per calendar week | `mcp_sqlite_server.py` | Tracks which slots are done this week; unique on `(calendar_week, run_date)` (allows two Easy Runs in same week) |
 | 4 | New table `plan_week_position` — single-row tracker for current plan week + start date | `mcp_sqlite_server.py` | Enables lazy week advancement each Saturday |
 | 5 | New tool `get_current_week_status` | `mcp_sqlite_server.py` | Returns planned/done/remaining for this week; auto-advances week if Saturday passed |
 | 6 | New tool `get_target_pace_for_type` | `mcp_sqlite_server.py` | Computes pace dynamically from last 5 runs of that type + HR zones; caps change at 15s/km |
